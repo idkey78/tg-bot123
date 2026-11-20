@@ -4,7 +4,6 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery
 
-from bot.config import Config
 from bot.constants import PAGE_SIZE, SUBJECTS
 from bot.database import requests
 from bot.database.database import Database
@@ -50,18 +49,17 @@ async def cb_subject(callback: CallbackQuery, state: FSMContext, db: Database) -
 
 
 @router.callback_query(F.data.startswith("prac:"))
-async def cb_practical(
-    callback: CallbackQuery, state: FSMContext, db: Database, config: Config
-) -> None:
+async def cb_practical(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
     await state.clear()
-    raw = (callback.data or "").split(":")[-1]
-    practical = await requests.get_practical(db, int(raw)) if raw.isdigit() else None
+    raw, _, raw_page = (callback.data or "").removeprefix("prac:").partition(":")
+    practical = await requests.get_practical(db, int(raw)) if raw.isdecimal() else None
+    page = int(raw_page) if raw_page.isdecimal() else 0
     if practical is None or not practical.is_active:
         await safe_answer(callback, "Ця практична більше недоступна", show_alert=True)
         return
     await safe_answer(callback)
     await show(
         callback,
-        render_practical_card(practical, config.timezone),
-        practical_card_kb(practical),
+        render_practical_card(practical),
+        practical_card_kb(practical, page),
     )

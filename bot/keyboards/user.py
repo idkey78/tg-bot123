@@ -3,12 +3,11 @@ from __future__ import annotations
 from typing import Sequence
 
 from aiogram.types import InlineKeyboardMarkup
-from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.constants import SUBJECTS, STATUS_EMOJI
 from bot.database.models import Order, Practical
 from bot.keyboards.common import btn, pagination_row
-from bot.utils.formatting import short
+from bot.utils.formatting import fmt_price, short
 
 
 def _kb(rows: list[list]) -> InlineKeyboardMarkup:
@@ -17,6 +16,7 @@ def _kb(rows: list[list]) -> InlineKeyboardMarkup:
 
 def main_menu_kb(is_admin: bool = False) -> InlineKeyboardMarkup:
     rows = [[btn(s.label, f"subj:{s.key}:0")] for s in SUBJECTS.values()]
+    rows.append([btn("ℹ️ Умови та оплата", "terms")])
     rows.append([btn("📦 Мої замовлення", "my:0"), btn("ℹ️ Допомога", "help")])
     if is_admin:
         rows.append([btn("⚙️ Адмін-панель", "adm:menu")])
@@ -35,7 +35,8 @@ def subject_practicals_kb(
     subject_key: str, practicals: Sequence[Practical], page: int, pages: int
 ) -> InlineKeyboardMarkup:
     rows = [
-        [btn(f"📝 {short(p.title, 38)} · {p.price} грн", f"prac:{p.id}")] for p in practicals
+        [btn(f"📝 {short(p.title, 38)} — {fmt_price(p.price)}", f"prac:{p.id}:{page}")]
+        for p in practicals
     ]
     rows.append(pagination_row(f"subj:{subject_key}:", page, pages))
     rows.append([btn("✏️ Custom-практична (своє завдання)", f"cust:{subject_key}")])
@@ -43,11 +44,11 @@ def subject_practicals_kb(
     return _kb(rows)
 
 
-def practical_card_kb(practical: Practical) -> InlineKeyboardMarkup:
+def practical_card_kb(practical: Practical, page: int = 0) -> InlineKeyboardMarkup:
     rows = []
     if practical.is_active:
-        rows.append([btn("🛒 Замовити", f"order:{practical.id}")])
-    rows.append([btn("⬅️ Назад", f"subj:{practical.subject}:0"), btn("🏠 Меню", "menu")])
+        rows.append([btn("✅ Оформити замовлення", f"order:{practical.id}")])
+    rows.append([btn("⬅️ Назад до списку", f"subj:{practical.subject}:{page}")])
     return _kb(rows)
 
 
@@ -92,11 +93,15 @@ def files_prompt_kb(back_data: str, has_content: bool) -> InlineKeyboardMarkup:
     return _kb(rows)
 
 
-def summary_kb() -> InlineKeyboardMarkup:
+def student_prompt_kb() -> InlineKeyboardMarkup:
+    return _kb([[btn("❌ Скасувати", "cancel")]])
+
+
+def summary_kb(confirm_data: str = "confirm", edit_data: str = "edit") -> InlineKeyboardMarkup:
     return _kb(
         [
-            [btn("✅ Відправити замовлення", "confirm")],
-            [btn("✏️ Редагувати", "edit"), btn("❌ Скасувати", "cancel")],
+            [btn("✅ Підтвердити замовлення", confirm_data)],
+            [btn("✏️ Редагувати", edit_data), btn("❌ Скасувати", "cancel")],
         ]
     )
 

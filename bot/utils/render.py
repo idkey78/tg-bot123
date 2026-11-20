@@ -11,13 +11,10 @@ from bot.constants import (
     subject_title,
 )
 from bot.database.models import Comment, Order, Practical
-from bot.utils.formatting import esc, fmt_dt, fmt_price, short, username_label
+from bot.utils.formatting import client_contact_link, esc, fmt_dt, fmt_price, short, username_label
 
 LINE = "───────────────"
-PAY_NOTE = (
-    "<i>Оплата здійснюється особисто. У боті платежі не проводяться і "
-    "автоматично не підтверджуються.</i>"
-)
+PAY_NOTE = "<b>💵 Оплата відбувається особисто (без передоплат наперед)</b>"
 
 
 def payment_text(payment_type: str, price: int | None, offer: str | None) -> str:
@@ -36,17 +33,15 @@ def status_label(status: str) -> str:
 
 # ───────────── Практичні ─────────────
 
-def render_practical_card(p: Practical, tz: tzinfo) -> str:
-    availability = "✅ Доступна" if p.is_active else "⛔ Недоступна"
-    desc = esc(p.description) if p.description else "—"
-    return (
-        f"🔷 <b>{esc(p.title)}</b>\n{LINE}\n"
-        f"📚 Предмет: {esc(subject_title(p.subject))}\n"
-        f"💰 Ціна: <b>{fmt_price(p.price)}</b>\n"
-        f"📌 Статус: {availability}\n"
-        f"🗓 Додано: {fmt_dt(p.created_at, tz)}\n\n"
-        f"📄 <b>Опис</b>\n{desc}"
+def render_practical_card(p: Practical) -> str:
+    lines = [f"📝 <b>{esc(p.title)}</b>", f"💰 Ціна: <b>{fmt_price(p.price)}</b>"]
+    if p.description:
+        lines.append(f"\n{esc(p.description)}")
+    lines.append(
+        "\nРобиться <b>з нуля індивідуально</b>. Кожен студент отримує власну роботу.\n"
+        f"{PAY_NOTE}"
     )
+    return "\n".join(lines)
 
 
 def render_practical_admin(p: Practical, tz: tzinfo) -> str:
@@ -73,6 +68,15 @@ def render_summary(
     now: int,
     tz: tzinfo,
 ) -> str:
+    if data.get("fixed_price_checkout") and practical is not None:
+        return (
+            "🔷 <b>Підтвердження замовлення</b>\n\n"
+            f"📝 Практична: {esc(practical.title)}\n"
+            f"💰 Ціна: <b>{fmt_price(practical.price)}</b>\n"
+            f"👤 ПІБ: {esc(data['student_name'])}\n"
+            f"🎓 Група: {esc(data['student_group'])}\n\n"
+            f"{PAY_NOTE}"
+        )
     is_custom_practical = bool(data.get("custom_practical"))
     subject_key = data.get("subject") or (practical.subject if practical else "")
     lines = [
@@ -139,6 +143,18 @@ def render_user_order(
 
 # ───────────── Замовлення (адмін) ─────────────
 
+def _admin_client_lines(o: Order) -> list[str]:
+    lines = [f"👤 Клієнт: {esc(o.full_name)}"]
+    if o.username:
+        lines.append(f"🔗 {username_label(o.username)}")
+    lines.extend([
+        f"✉️ {client_contact_link(o.user_id)}",
+        f"🆔 Telegram ID: <code>{o.user_id}</code>",
+        f"🎓 Ім'я та група: {esc(o.student_info) if o.student_info else 'не вказано'}",
+    ])
+    return lines
+
+
 def render_admin_order(
     o: Order, tz: tzinfo, *, comments: int = 0, task_files: int = 0, result_files: int = 0
 ) -> str:
@@ -147,10 +163,7 @@ def render_admin_order(
         LINE,
         f"📌 Статус: <b>{status_label(o.status)}</b>",
         "",
-        f"👤 Клієнт: {esc(o.full_name)}",
-        f"🔗 Username: {username_label(o.username)}",
-        f"🆔 Telegram ID: <code>{o.user_id}</code>",
-        f"🎓 Ім'я та група: {esc(o.student_info) if o.student_info else 'не вказано'}",
+        *_admin_client_lines(o),
         "",
         f"📚 Предмет: {esc(subject_title(o.subject))}",
         f"📝 Практична: {esc(o.practical_title)}",
@@ -160,7 +173,7 @@ def render_admin_order(
         if o.custom_description:
             lines.append(f"🗒 Опис: {esc(o.custom_description)}")
     lines += [
-        f"💰 Оплата: {order_payment(o)}",
+        f"💰 Оплата: {order_payment(o)}" if o.is_custom else f"💵 Ціна: {fmt_price(o.price)}",
         "",
         f"🕒 Створено: {fmt_dt(o.created_at, tz)}",
         f"🔄 Оновлено: {fmt_dt(o.updated_at, tz)}",
@@ -173,10 +186,7 @@ def render_admin_notification(o: Order, tz: tzinfo, task_files: int = 0) -> str:
     lines = [
         f"🔔 <b>НОВЕ ЗАМОВЛЕННЯ №{o.id}</b>",
         "",
-        f"👤 Клієнт: {esc(o.full_name)}",
-        f"🔗 Username: {username_label(o.username)}",
-        f"🆔 Telegram ID: <code>{o.user_id}</code>",
-        f"🎓 Ім'я та група: {esc(o.student_info) if o.student_info else 'не вказано'}",
+        *_admin_client_lines(o),
         "",
         f"📚 Предмет: {esc(subject_title(o.subject))}",
         f"📝 Практична: {esc(o.practical_title)}",

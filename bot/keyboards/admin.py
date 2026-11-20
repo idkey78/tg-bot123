@@ -7,7 +7,7 @@ from aiogram.types import InlineKeyboardMarkup
 from bot.constants import SUBJECTS, STATUS_EMOJI, STATUS_LABELS, STATUS_ORDER, subject_title
 from bot.database.models import Order, Practical
 from bot.keyboards.common import btn, pagination_row, url_btn
-from bot.utils.formatting import contact_url, short, username_label
+from bot.utils.formatting import contact_url, fmt_price, short, username_label
 
 
 def _kb(rows: list[list]) -> InlineKeyboardMarkup:
@@ -52,7 +52,7 @@ def practicals_list_kb(
     items: Sequence[Practical], page: int, pages: int
 ) -> InlineKeyboardMarkup:
     rows = [
-        [btn(f"{'🟢' if p.is_active else '🔴'} #{p.id} {short(p.title, 28)} · {p.price} грн",
+        [btn(f"{'🟢' if p.is_active else '🔴'} #{p.id} {short(p.title, 28)} — {fmt_price(p.price)}",
              f"adm:p:{p.id}")]
         for p in items
     ]

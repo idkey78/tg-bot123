@@ -21,6 +21,7 @@ from bot.utils.formatting import esc, fmt_price
 from bot.utils.messages import delete_quietly, edit_message, edit_panel, safe_answer, show
 from bot.utils.paging import clamp_page, total_pages
 from bot.utils.render import LINE, render_practical_admin
+from bot.utils.validators import validate_practical_price
 
 logger = logging.getLogger(__name__)
 router = Router(name="admin_practicals")
@@ -29,6 +30,8 @@ router.callback_query.filter(IsAdmin())
 
 _create_lock = asyncio.Lock()
 
+PRICE_PROMPT = f"Введіть ціну в гривнях від 1 до {PRICE_MAX}, наприклад 50 або 75."
+
 EDIT_FIELDS = {"t": "назву", "d": "опис", "p": "ціну"}
 EDIT_STATES = {"t": EditPractical.title, "d": EditPractical.description, "p": EditPractical.price}
 
@@ -36,14 +39,6 @@ EDIT_STATES = {"t": EditPractical.title, "d": EditPractical.description, "p": Ed
 def _id(callback: CallbackQuery) -> int:
     raw = (callback.data or "").split(":")[-1]
     return int(raw) if raw.isdigit() else 0
-
-
-def parse_price(text: str) -> int | None:
-    cleaned = text.replace(" ", "").replace("грн", "").strip()
-    if not cleaned.isdigit():
-        return None
-    value = int(cleaned)
-    return value if 0 < value <= PRICE_MAX else None
 
 
 # ───────────────────────── Додавання ─────────────────────────
@@ -116,14 +111,14 @@ async def msg_add_description(message: Message, state: FSMContext, bot: Bot) -> 
     await state.set_state(AddPractical.price)
     await edit_panel(
         bot, state, message.chat.id,
-        _add_header(4) + "Вкажіть <b>ціну</b> у гривнях (ціле число), напр. <i>150</i>:",
+        _add_header(4) + PRICE_PROMPT,
         kb.cancel_to_menu_kb(),
     )
 
 
 @router.message(StateFilter(AddPractical.price), F.text)
 async def msg_add_price(message: Message, state: FSMContext, bot: Bot) -> None:
-    price = parse_price(message.text or "")
+    price = validate_practical_price(message.text or "")
     await delete_quietly(message)
     if price is None:
         await edit_panel(
@@ -169,10 +164,16 @@ async def cb_add_confirm(
             await safe_answer(callback, "Практичну вже створено", show_alert=True)
             return
         data: dict[str, Any] = await state.get_data()
-        await state.clear()
+        price = validate_practical_price(str(data["price"]))
+        if price is None:
+            await state.set_state(AddPractical.price)
+            await safe_answer(callback)
+            await show(callback, _add_header(4) + PRICE_PROMPT, kb.cancel_to_menu_kb())
+            return
         practical = await requests.create_practical(
-            db, data["subject"], data["title"], data["description"], int(data["price"])
+            db, data["subject"], data["title"], data["description"], price
         )
+        await state.clear()
     await safe_answer(callback, "Створено ✅")
     await show(
         callback,
@@ -298,7 +299,7 @@ async def msg_edit_description(message: Message, state: FSMContext, bot: Bot, db
 
 @router.message(StateFilter(EditPractical.price), F.text)
 async def msg_edit_price(message: Message, state: FSMContext, bot: Bot, db: Database, config: Config) -> None:
-    price = parse_price(message.text or "")
+    price = validate_practical_price(message.text or "")
     await delete_quietly(message)
     if price is None:
         await _edit_error(message, state, bot, f"Ціна має бути цілим числом від 1 до {PRICE_MAX}.")

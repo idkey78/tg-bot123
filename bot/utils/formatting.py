@@ -40,6 +40,10 @@ def contact_url(user_id: int, username: str | None) -> str:
     return f"https://t.me/{username}" if username else f"tg://user?id={user_id}"
 
 
+def client_contact_link(user_id: int) -> str:
+    return f'<a href="tg://user?id={user_id}">Написати клієнту</a>'
+
+
 def short(text: str, limit: int) -> str:
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"

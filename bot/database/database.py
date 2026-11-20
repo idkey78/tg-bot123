@@ -20,7 +20,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiosqlite
 
+from bot.constants import PRACTICAL_PRICE_DEFAULT
+
 logger = logging.getLogger(__name__)
+
+_PRACTICAL_PRICE_COLUMN = (
+    f"price INTEGER NOT NULL DEFAULT {PRACTICAL_PRICE_DEFAULT} CHECK (price >= 0)"
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -297,6 +303,10 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.execute("PRAGMA busy_timeout=5000")
         await self._conn.executescript(SCHEMA)
+        async with self.transaction() as tx:
+            columns = await tx.fetchall("PRAGMA table_info(practicals)")
+            if all(column["name"] != "price" for column in columns):
+                await tx.execute(f"ALTER TABLE practicals ADD COLUMN {_PRACTICAL_PRICE_COLUMN}")
         logger.info("База даних підключена (SQLite): %s", self._path)
 
     async def _connect_pg(self) -> None:
@@ -315,6 +325,10 @@ class Database:
         )
         async with self._pool.acquire() as conn:
             await conn.execute(PG_SCHEMA)
+        async with self.transaction() as tx:
+            await tx.execute(
+                f"ALTER TABLE practicals ADD COLUMN IF NOT EXISTS {_PRACTICAL_PRICE_COLUMN}"
+            )
         logger.info("База даних підключена (PostgreSQL)")
 
     async def close(self) -> None:

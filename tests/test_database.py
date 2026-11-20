@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -14,30 +18,53 @@ from bot.constants import (
     STATUS_REJECTED,
 )
 from bot.database import requests as r
+from bot.database.database import Database
+from tests.helpers import DAY, T0, make_order, make_practical
 
-DAY = 24 * 3600
-T0 = 1_700_000_000
+class PracticalPriceDatabaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_upgrade_backfills_price_and_preserves_existing_price_on_reconnect(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.sqlite"
+            with sqlite3.connect(path) as conn:
+                conn.execute(
+                    "CREATE TABLE practicals (id INTEGER PRIMARY KEY, subject TEXT NOT NULL, "
+                    "title TEXT NOT NULL, description TEXT NOT NULL, is_active INTEGER NOT NULL, "
+                    "created_at INTEGER NOT NULL)"
+                )
+                conn.execute(
+                    "INSERT INTO practicals VALUES (?, ?, ?, ?, ?, ?)",
+                    (1, "info", "Практична", "Опис", 1, T0),
+                )
+            conn.close()
 
+            db = Database(path)
+            await db.connect()
+            try:
+                practical = await r.get_practical(db, 1)
+                self.assertEqual((practical.title, practical.price), ("Практична", 50))
+                await r.update_practical(db, practical.id, price=75)
+            finally:
+                await db.close()
 
-async def make_order(db, user_id=1, token=None, now=T0, practical_id=None, **kw):
-    return await r.create_order(
-        db,
-        user_id=user_id,
-        username=kw.pop("username", "student"),
-        full_name="Student",
-        payment_type=kw.pop("payment_type", PAYMENT_REGULAR),
-        custom_offer=kw.pop("custom_offer", None),
-        draft_token=token or f"tok-{user_id}-{now}-{id(kw)}",
-        limit=3,
-        window_seconds=DAY,
-        practical_id=practical_id,
-        now=now,
-        **kw,
-    )
+            await db.connect()
+            try:
+                self.assertEqual((await r.get_practical(db, 1)).price, 75)
+            finally:
+                await db.close()
 
-
-async def make_practical(db, title="Практична №1", price=100, subject="info"):
-    return await r.create_practical(db, subject, title, "Опис", price, now=T0)
+    async def test_repository_defaults_to_50_and_rejects_invalid_prices(self):
+        db = Database(":memory:")
+        await db.connect()
+        self.addAsyncCleanup(db.close)
+        practical = await r.create_practical(db, "info", "Практична", "")
+        self.assertEqual(practical.price, 50)
+        for price in (0, -1, 501, 50.5, "50", True):
+            with self.subTest(price=price):
+                with self.assertRaises(ValueError):
+                    await r.create_practical(db, "info", "Недійсна ціна", "", price)
+                with self.assertRaises(ValueError):
+                    await r.update_practical(db, practical.id, price=price)
+        self.assertEqual((await r.get_practical(db, practical.id)).price, 50)
 
 
 # ───────── Реєстрація користувача ─────────

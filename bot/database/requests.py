@@ -14,6 +14,8 @@ from bot.constants import (
     MAX_TASK_FILES,
     PAYMENT_CUSTOM,
     PAYMENT_REGULAR,
+    PRACTICAL_PRICE_DEFAULT,
+    PRICE_MAX,
     STATUS_LABELS,
     STATUS_NEW,
     SUBJECTS,
@@ -67,13 +69,17 @@ async def set_setting(db: Database, key: str, value: str) -> None:
 
 # ───────────────────────────── Практичні ─────────────────────────────
 
+def _check_practical_price(price: int) -> None:
+    if type(price) is not int or not 1 <= price <= PRICE_MAX:
+        raise ValueError(f"Ціна має бути цілим числом від 1 до {PRICE_MAX}")
+
 async def create_practical(
-    db: Database, subject: str, title: str, description: str, price: int, now: int | None = None
+    db: Database, subject: str, title: str, description: str,
+    price: int = PRACTICAL_PRICE_DEFAULT, now: int | None = None,
 ) -> Practical:
     if subject not in SUBJECTS:
         raise ValueError(f"Невідомий предмет: {subject}")
-    if price < 0:
-        raise ValueError("Ціна не може бути від'ємною")
+    _check_practical_price(price)
     new_id = await db.insert(
         "INSERT INTO practicals (subject, title, description, price, is_active, created_at) "
         "VALUES (?, ?, ?, ?, 1, ?)",
@@ -142,8 +148,7 @@ async def update_practical(
         sets.append("description = ?")
         params.append(description)
     if price is not None:
-        if price < 0:
-            raise ValueError("Ціна не може бути від'ємною")
+        _check_practical_price(price)
         sets.append("price = ?")
         params.append(price)
     if sets:
@@ -172,6 +177,7 @@ CREATED = "created"
 DUPLICATE = "duplicate"
 LIMIT_REACHED = "limit"
 UNAVAILABLE = "unavailable"
+PRICE_CHANGED = "price_changed"
 INVALID = "invalid"
 
 
@@ -221,12 +227,13 @@ async def create_order(
     student_info: str | None = None,
     files: Iterable[dict[str, Any]] = (),
     now: int | None = None,
+    expected_price: int | None = None,
 ) -> OrderResult:
     """Атомарно створює замовлення.
 
     * `draft_token` робить операцію ідемпотентною: повторне натискання кнопки
       повертає вже створене замовлення (DUPLICATE) і нічого не дублює.
-    * Ліміт перевіряється в тій самій транзакції, що й вставка.
+    * Ліміт і очікувана ціна перевіряються в тій самій транзакції, що й вставка.
     * `practical_id=None` — Custom-практична (завдання від клієнта, з файлами).
     """
     ts = now or _now()
@@ -254,7 +261,10 @@ async def create_order(
 
         price: int | None = None
         if practical_id is not None:
-            prow = await tx.fetchone("SELECT * FROM practicals WHERE id = ?", (practical_id,))
+            sql = "SELECT * FROM practicals WHERE id = ?"
+            if db.is_postgres:
+                sql += " FOR SHARE"
+            prow = await tx.fetchone(sql, (practical_id,))
             if prow is None or not prow["is_active"]:
                 return OrderResult(UNAVAILABLE)
             subject_key = prow["subject"]
@@ -263,6 +273,8 @@ async def create_order(
             description = None
             if payment_type == PAYMENT_REGULAR:
                 price = int(prow["price"])
+                if expected_price is not None and price != expected_price:
+                    return OrderResult(PRICE_CHANGED)
         else:
             # Custom-практична: потрібен коректний предмет і хоча б файл чи опис.
             description = (custom_description or "").strip() or None

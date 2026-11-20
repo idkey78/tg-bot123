@@ -9,15 +9,28 @@ from bot.config import Config
 from bot.constants import DEFAULT_HELP_TEXT, SETTING_HELP_TEXT
 from bot.database import requests
 from bot.database.database import Database
-from bot.keyboards.user import help_kb, main_menu_kb
+from bot.keyboards.user import back_to_menu_kb, help_kb, main_menu_kb
 from bot.utils.messages import safe_answer, show
 
 router = Router(name="user_start")
 
 WELCOME = (
-    "👋 <b>Вітаємо!</b>\n"
-    "Тут ти можеш оформити замовлення на допомогу з навчальними практичними роботами.\n\n"
-    "Обери потрібний розділ нижче."
+    "👋 <b>Привіт! Потрібна практична?</b>\n\n"
+    "📝 Кожну роботу робимо <b>з нуля індивідуально</b>. Навіть коли вся група має "
+    "спільне завдання, твої формулювання, оформлення та скріншоти будуть свої.\n"
+    "📐 Дотримуємося вимог до шрифтів, відступів і програм. Працюємо в Cisco Packet Tracer, "
+    "OrCAD, Word, Excel та інших програмах за завданням.\n"
+    "💰 Студентські ціни, зазвичай <b>50–75 грн</b>. Точна ціна є в картці роботи.\n"
+    "💵 <b>Оплата особисто, без передоплати.</b>\n\n"
+    "Обери предмет нижче, щоб переглянути практичні."
+)
+
+TERMS = (
+    "ℹ️ <b>Умови та оплата</b>\n\n"
+    "1. Обери практичну, введи ПІБ для титульної сторінки та групу, підтвердь замовлення.\n"
+    "2. Узгодимо термін перед початком роботи з урахуванням обсягу завдання.\n"
+    "3. Зауваження викладача до виконаної роботи виправимо безкоштовно.\n\n"
+    "💵 <b>Оплата відбувається особисто, без передоплати.</b>"
 )
 
 
@@ -42,6 +55,13 @@ async def cb_menu(callback: CallbackQuery, state: FSMContext, config: Config) ->
     await state.clear()
     await safe_answer(callback)
     await show(callback, WELCOME, main_menu_kb(callback.from_user.id == config.admin_id))
+
+
+@router.callback_query(F.data == "terms")
+async def cb_terms(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await safe_answer(callback)
+    await show(callback, TERMS, back_to_menu_kb())
 
 
 @router.callback_query(F.data == "help")

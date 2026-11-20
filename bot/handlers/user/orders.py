@@ -1,4 +1,4 @@
-"""Оформлення замовлення: вибір оплати, Custom-практична з файлами, ім'я/група, підтвердження."""
+"""Оформлення практичних за ціною з каталогу та власних завдань."""
 from __future__ import annotations
 
 import asyncio
@@ -37,6 +37,7 @@ from bot.utils.files import extract_file, file_title
 from bot.utils.formatting import esc, fmt_duration, fmt_price
 from bot.utils.messages import delete_quietly, edit_panel, present, safe_answer, show
 from bot.utils.render import LINE, PAY_NOTE, render_summary, render_user_order
+from bot.utils.validators import validate_student_field
 
 logger = logging.getLogger(__name__)
 router = Router(name="user_orders")
@@ -46,6 +47,11 @@ router = Router(name="user_orders")
 _file_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 Screen = tuple[str, InlineKeyboardMarkup]
+
+STUDENT_GROUP_MAX = 30
+STUDENT_NAME_MAX = STUDENT_INFO_MAX - STUDENT_GROUP_MAX - 2
+NAME_PROMPT = "Напиши ПІБ для титульної сторінки, наприклад Іваненко Іван Іванович."
+GROUP_PROMPT = "Напиши свою групу, наприклад КІ-21."
 
 
 # ───────────────────────── Допоміжні функції ─────────────────────────
@@ -110,7 +116,20 @@ def _ready(data: dict[str, Any]) -> bool:
         return False
     if data.get("custom_practical"):
         return bool(data.get("files") or data.get("custom_description"))
+    if data.get("fixed_price_checkout"):
+        return bool(
+            payment == PAYMENT_REGULAR
+            and data.get("practical_id")
+            and data.get("student_name")
+            and data.get("student_group")
+        )
     return bool(data.get("practical_id"))
+
+
+def _confirmation_data(data: dict[str, Any]) -> str:
+    if data.get("fixed_price_checkout"):
+        return f"confirm:{data['draft_token']}:{data['quoted_price']}"
+    return "confirm"
 
 
 # ───────────────────────── Екрани ─────────────────────────
@@ -202,17 +221,6 @@ def screen_files(data: dict[str, Any], error: str | None = None) -> Screen:
     return "\n".join(lines), kb.files_prompt_kb(back, has_content)
 
 
-async def screen_summary(
-    db: Database, data: dict[str, Any], username: str | None, full_name: str, config: Config
-) -> Screen:
-    practical = None if data.get("custom_practical") else await _practical(db, data)
-    text = render_summary(
-        data, practical, username=username, full_name=full_name,
-        now=int(time.time()), tz=config.timezone,
-    )
-    return text, kb.summary_kb()
-
-
 # ───────────────────────── Переходи між кроками ─────────────────────────
 
 async def _abort(source: CallbackQuery | Message, bot: Bot, state: FSMContext, text: str) -> None:
@@ -250,14 +258,28 @@ async def go_files(source: CallbackQuery | Message, bot: Bot, state: FSMContext,
 
 
 async def go_summary(
-    source: CallbackQuery | Message, bot: Bot, state: FSMContext, db: Database, config: Config
+    source: CallbackQuery | Message, bot: Bot, state: FSMContext, db: Database, config: Config,
+    *, price_changed: bool = False,
 ) -> None:
-    await state.update_data(editing=False)
-    await state.set_state(OrderFlow.confirm)
-    data = await state.get_data()
+    data = await state.update_data(editing=False)
+    practical = None if data.get("custom_practical") else await _practical(db, data)
+    fixed_price = bool(data.get("fixed_price_checkout"))
+    if fixed_price:
+        if practical is None or not practical.is_active:
+            await _abort(source, bot, state, "⚠️ Ця практична більше недоступна.")
+            return
+        data = await state.update_data(quoted_price=practical.price)
+
     user = source.from_user
     assert user is not None
-    text, markup = await screen_summary(db, data, user.username, user.full_name, config)
+    text = render_summary(
+        data, practical, username=user.username, full_name=user.full_name,
+        now=int(time.time()), tz=config.timezone,
+    )
+    if price_changed:
+        text = "⚠️ Ціна змінилася. Перевір нову суму й підтвердь замовлення.\n\n" + text
+    markup = kb.summary_kb(_confirmation_data(data), edit_data="edit:info" if fixed_price else "edit")
+    await state.set_state(OrderFlow.confirm)
     await present(source, bot, state, text, markup)
 
 
@@ -287,9 +309,11 @@ async def cb_start_order(
     if not await _precheck(callback, db, config):
         return
     await _begin(
-        callback, state, custom_practical=False, practical_id=practical.id, subject=practical.subject
+        callback, state, custom_practical=False, practical_id=practical.id, subject=practical.subject,
+        fixed_price_checkout=True, payment_type=PAYMENT_REGULAR,
     )
-    await go_payment(callback, bot, state, db)
+    await state.set_state(OrderFlow.student_name)
+    await present(callback, bot, state, NAME_PROMPT, kb.student_prompt_kb())
 
 
 @router.callback_query(F.data.startswith("cust:"))
@@ -444,11 +468,46 @@ async def cb_files_done(
     F.data == "flow:files",
 )
 async def cb_flow_files(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
+    if not (await state.get_data()).get("custom_practical"):
+        await safe_answer(callback, "Для цього замовлення файли із завданням не потрібні.", show_alert=True)
+        return
     await safe_answer(callback)
     await go_files(callback, bot, state)
 
 
 # ───────────────────────── Ім'я та група ─────────────────────────
+
+@router.message(StateFilter(OrderFlow.student_name))
+async def msg_student_name(message: Message, state: FSMContext, bot: Bot) -> None:
+    name = validate_student_field(message.text, STUDENT_NAME_MAX)
+    await delete_quietly(message)
+    if name is None or not any(char.isalpha() for char in name):
+        await present(
+            message, bot, state, f"⚠️ Введи ПІБ текстом (до {STUDENT_NAME_MAX} символів).",
+            kb.student_prompt_kb(),
+        )
+        return
+    await state.update_data(student_name=name)
+    await state.set_state(OrderFlow.student_group)
+    await present(message, bot, state, GROUP_PROMPT, kb.student_prompt_kb())
+
+
+@router.message(StateFilter(OrderFlow.student_group))
+async def msg_student_group(
+    message: Message, state: FSMContext, bot: Bot, db: Database, config: Config
+) -> None:
+    group = validate_student_field(message.text, STUDENT_GROUP_MAX)
+    await delete_quietly(message)
+    if group is None:
+        await present(
+            message, bot, state, f"⚠️ Введи групу текстом (до {STUDENT_GROUP_MAX} символів).",
+            kb.student_prompt_kb(),
+        )
+        return
+    data = await state.get_data()
+    await state.update_data(student_group=group, student_info=f"{data['student_name']}, {group}")
+    await go_summary(message, bot, state, db, config)
+
 
 @router.message(StateFilter(OrderFlow.student_info), F.text)
 async def msg_info(
@@ -511,9 +570,12 @@ async def cb_edit(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
 
 @router.callback_query(StateFilter(OrderFlow.confirm), F.data == "edit:pay")
 async def cb_edit_pay(callback: CallbackQuery, state: FSMContext, bot: Bot, db: Database) -> None:
+    data = await state.get_data()
+    if data.get("fixed_price_checkout"):
+        await safe_answer(callback, "Ціна вказана в картці практичної.", show_alert=True)
+        return
     await safe_answer(callback)
     await state.update_data(editing=True)
-    data = await state.get_data()
     if data.get("custom_practical"):
         await go_offer(callback, bot, state)
     else:
@@ -523,8 +585,12 @@ async def cb_edit_pay(callback: CallbackQuery, state: FSMContext, bot: Bot, db: 
 @router.callback_query(StateFilter(OrderFlow.confirm), F.data == "edit:info")
 async def cb_edit_info(callback: CallbackQuery, state: FSMContext, bot: Bot) -> None:
     await safe_answer(callback)
-    await state.update_data(editing=True)
-    await go_info(callback, bot, state)
+    data = await state.update_data(editing=True)
+    if data.get("fixed_price_checkout"):
+        await state.set_state(OrderFlow.student_name)
+        await present(callback, bot, state, NAME_PROMPT, kb.student_prompt_kb())
+    else:
+        await go_info(callback, bot, state)
 
 
 @router.callback_query(StateFilter(OrderFlow.confirm), F.data == "edit:files")
@@ -546,7 +612,9 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 
 # ───────────────────────── Підтвердження ─────────────────────────
 
-@router.callback_query(StateFilter(OrderFlow.confirm), F.data == "confirm")
+@router.callback_query(
+    StateFilter(OrderFlow.confirm), (F.data == "confirm") | F.data.startswith("confirm:")
+)
 async def cb_confirm(
     callback: CallbackQuery, state: FSMContext, bot: Bot, db: Database, config: Config
 ) -> None:
@@ -557,6 +625,9 @@ async def cb_confirm(
         await state.clear()
         await safe_answer(callback, "Дані застаріли. Почніть оформлення спочатку.", show_alert=True)
         await show(callback, "⚠️ Сесія оформлення застаріла.", kb.back_to_menu_kb())
+        return
+    if callback.data != _confirmation_data(data):
+        await safe_answer(callback, "Підтвердь замовлення кнопкою під актуальною ціною.", show_alert=True)
         return
     if await requests.get_setting(db, SETTING_ORDERS_ENABLED, "1") != "1":
         await state.clear()
@@ -584,8 +655,12 @@ async def cb_confirm(
         subject=data.get("subject") if custom_practical else None,
         custom_description=data.get("custom_description") if custom_practical else None,
         student_info=data.get("student_info"),
-        files=data.get("files") or [] if custom_practical else [],
+        files=(data.get("files") or []) if custom_practical else [],
+        expected_price=data.get("quoted_price"),
     )
+    if result.status == requests.PRICE_CHANGED:
+        await go_summary(callback, bot, state, db, config, price_changed=True)
+        return
     await state.clear()
 
     if result.status == requests.LIMIT_REACHED:
@@ -604,13 +679,14 @@ async def cb_confirm(
         order, config.timezone,
         task_files=len(result.files) if result.status == requests.CREATED else len(data.get("files") or []),
     )
-    await show(
-        callback,
-        f"✅ <b>Замовлення №{order.id} відправлено</b>\n\n{details}\n\n"
-        "Виконавець отримав сповіщення. Ви можете залишати коментарі до замовлення "
-        "в розділі «Мої замовлення».\n"
-        f"{PAY_NOTE}",
-        kb.after_order_kb(),
-    )
-    if result.status == requests.CREATED:
-        await notify_admin_new_order(bot, config, order, result.files)
+    try:
+        await show(
+            callback,
+            f"✅ <b>Замовлення №{order.id} відправлено</b>\n\n{details}\n\n"
+            "Статус і коментарі до замовлення є в розділі «Мої замовлення».\n"
+            f"{PAY_NOTE}",
+            kb.after_order_kb(),
+        )
+    finally:
+        if result.status == requests.CREATED:
+            await notify_admin_new_order(bot, config, order, result.files)

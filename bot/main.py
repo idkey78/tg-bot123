@@ -11,6 +11,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiohttp import ClientSession, ClientTimeout, web
@@ -42,7 +43,9 @@ logger = logging.getLogger("bot")
 
 def create_dispatcher(config: Config, db: Database) -> Dispatcher:
     """Збирає Dispatcher (окремо від запуску — зручно для тестів)."""
-    dp = Dispatcher(storage=DbStorage(db), config=config, db=db)
+    dp = Dispatcher(
+        storage=DbStorage(db), events_isolation=SimpleEventIsolation(), config=config, db=db,
+    )
     dp.update.outer_middleware(UserRegistrationMiddleware(db))
     dp.include_routers(
         errors.router,
